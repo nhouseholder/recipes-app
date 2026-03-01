@@ -1,0 +1,29 @@
+# Virtual environment
+venv/
+.venv/
+
+# Data directory (credentials, recipes, videos)
+data/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Environment variables
+.env
+*.env
+
+# Instaloader sessions
+*.session

@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nick's Recipe Extractor</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+
+<div id="app">
+
+    <!-- ════════════════════════════════════════════════════ -->
+    <!--  SCREEN 1: LOGIN                                    -->
+    <!-- ════════════════════════════════════════════════════ -->
+    <section id="screen-login" class="screen active">
+        <div class="center-card">
+            <div class="logo">🍳</div>
+            <h1>Recipe Extractor</h1>
+            <p class="subtitle">Log in with your Instagram to pull all your saved recipe videos and turn them into simple, clean recipes.</p>
+
+            <div class="form-group">
+                <label>Instagram Username (your @handle, NOT email)</label>
+                <input type="text" id="ig-username" placeholder="nicholas.householder" autocomplete="username">
+            </div>
+            <div class="form-group">
+                <label>Instagram Password</label>
+                <input type="password" id="ig-password" placeholder="your_password" autocomplete="current-password">
+            </div>
+
+            <!-- 2FA section (hidden by default) -->
+            <div id="twofa-section" class="form-group hidden">
+                <label>2FA Code (from your authenticator app)</label>
+                <input type="text" id="ig-2fa" placeholder="123456" maxlength="6" inputmode="numeric">
+            </div>
+
+            <button id="btn-login" class="btn btn-primary btn-full" onclick="doLogin()">
+                Log In & Get My Recipes
+            </button>
+
+            <p id="login-error" class="error-msg hidden"></p>
+
+            <div class="divider"><span>or</span></div>
+
+            <p class="alt-text">Already have video files? <a href="#" onclick="skipLogin()">Skip login →</a></p>
+
+            <div class="trust-note">
+                <p>🔒 Credentials saved locally so the app can auto-check for new recipes. Never sent anywhere except Instagram.</p>
+            </div>
+        </div>
+    </section>
+
+
+    <!-- ════════════════════════════════════════════════════ -->
+    <!--  SCREEN 2: PROCESSING                               -->
+    <!-- ════════════════════════════════════════════════════ -->
+    <section id="screen-processing" class="screen">
+        <div class="center-card wide">
+            <div class="logo">⚡</div>
+            <h1>Extracting Your Recipes</h1>
+            <p class="subtitle" id="proc-subtitle">Sit tight — this runs through all your saved recipe videos automatically.</p>
+
+            <div class="pipeline-visual">
+                <div class="pipe-step" id="pipe-fetch">
+                    <div class="pipe-icon">📱</div>
+                    <div class="pipe-label">Fetch from Instagram</div>
+                    <div class="pipe-status">waiting</div>
+                </div>
+                <div class="pipe-arrow">→</div>
+                <div class="pipe-step" id="pipe-transcribe">
+                    <div class="pipe-icon">🎤</div>
+                    <div class="pipe-label">Transcribe Audio</div>
+                    <div class="pipe-status">waiting</div>
+                </div>
+                <div class="pipe-arrow">→</div>
+                <div class="pipe-step" id="pipe-extract">
+                    <div class="pipe-icon">🤖</div>
+                    <div class="pipe-label">Create Recipe</div>
+                    <div class="pipe-status">waiting</div>
+                </div>
+                <div class="pipe-arrow">→</div>
+                <div class="pipe-step" id="pipe-done">
+                    <div class="pipe-icon">✅</div>
+                    <div class="pipe-label">Done!</div>
+                    <div class="pipe-status">waiting</div>
+                </div>
+            </div>
+
+            <div class="progress-section">
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progress-fill"></div>
+                </div>
+                <p class="progress-msg" id="progress-msg">Starting...</p>
+            </div>
+
+            <div id="proc-errors" class="errors-box hidden"></div>
+
+            <div class="prefs-reminder">
+                <h4>Your built-in preferences:</h4>
+                <div class="pref-tags">
+                    <span class="pref-tag">✅ Minimal ingredients</span>
+                    <span class="pref-tag">🚫 No seed oils</span>
+                    <span class="pref-tag">⏱️ Under 1 hour</span>
+                    <span class="pref-tag">🍳 Basic equipment only</span>
+                </div>
+            </div>
+        </div>
+    </section>
+
+
+    <!-- ════════════════════════════════════════════════════ -->
+    <!--  SCREEN 3: RECIPES                                  -->
+    <!-- ════════════════════════════════════════════════════ -->
+    <section id="screen-recipes" class="screen">
+        <header class="recipes-header">
+            <div class="header-left">
+                <h1>🍳 My Recipes</h1>
+                <span class="recipe-count" id="recipe-count">0 recipes</span>
+            </div>
+            <div class="header-right">
+                <input type="text" id="search-box" placeholder="Search recipes...">
+                <select id="filter-cat">
+                    <option value="">All</option>
+                    <option value="breakfast">🌅 Breakfast</option>
+                    <option value="lunch">🥪 Lunch</option>
+                    <option value="dinner">🍽️ Dinner</option>
+                    <option value="snack">🍿 Snack</option>
+                    <option value="dessert">🍰 Dessert</option>
+                    <option value="side">🥗 Side</option>
+                </select>
+                <button class="btn btn-small btn-accent" onclick="showGroceryPicker()">🛒 Grocery List</button>
+                <button class="btn btn-small btn-secondary" onclick="showSettings()">⚙️</button>
+                <button class="btn btn-small btn-primary" onclick="refetchRecipes()">🔄 Re-fetch</button>
+            </div>
+        </header>
+
+        <div id="recipes-grid" class="recipes-grid"></div>
+
+        <!-- Recipe Detail Modal -->
+        <div id="modal" class="modal hidden" onclick="if(event.target===this)closeModal()">
+            <div class="modal-box">
+                <button class="modal-x" onclick="closeModal()">×</button>
+                <div id="modal-body"></div>
+            </div>
+        </div>
+
+        <!-- Grocery List Modal -->
+        <div id="grocery-modal" class="modal hidden" onclick="if(event.target===this)closeGrocery()">
+            <div class="modal-box wide">
+                <button class="modal-x" onclick="closeGrocery()">×</button>
+                <div id="grocery-body">
+                    <h2>🛒 Weekly Grocery List</h2>
+                    <p class="subtitle">Pick a random recipe or select one, and get a detailed shopping list with aisle info.</p>
+                    <div style="display:flex;gap:10px;margin:20px 0;flex-wrap:wrap">
+                        <button class="btn btn-primary" onclick="pickRandomGrocery()">🎲 Random Recipe</button>
+                        <button class="btn btn-secondary" onclick="sendGroceryEmail()">📧 Email Me This Week's List</button>
+                    </div>
+                    <div id="grocery-content"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Settings Modal -->
+        <div id="settings-modal" class="modal hidden" onclick="if(event.target===this)closeSettings()">
+            <div class="modal-box small">
+                <button class="modal-x" onclick="closeSettings()">×</button>
+                <h2>⚙️ Settings</h2>
+
+                <div class="settings-section">
+                    <h3>🤖 AI Settings</h3>
+                    <div class="form-group">
+                        <label>OpenAI API Key <span class="optional">(optional, for better recipes)</span></label>
+                        <input type="password" id="set-openai" placeholder="sk-...">
+                        <p class="hint">Without this, a basic parser is used. With it, GPT-4o-mini creates better recipes (~$0.01 each).</p>
+                    </div>
+                    <div class="form-group">
+                        <label>Whisper Model Size</label>
+                        <select id="set-whisper">
+                            <option value="tiny">Tiny (fastest)</option>
+                            <option value="base" selected>Base (recommended)</option>
+                            <option value="small">Small (better quality)</option>
+                            <option value="medium">Medium (best quality, slow)</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="settings-section">
+                    <h3>📧 Email Notifications</h3>
+                    <div class="form-group">
+                        <label>Send grocery list TO this email</label>
+                        <input type="email" id="set-notify-email" placeholder="your@email.com">
+                    </div>
+                    <div class="form-group">
+                        <label>Gmail address to send FROM</label>
+                        <input type="email" id="set-smtp-email" placeholder="your@gmail.com">
+                    </div>
+                    <div class="form-group">
+                        <label>Gmail App Password</label>
+                        <input type="password" id="set-smtp-pass" placeholder="xxxx xxxx xxxx xxxx">
+                        <p class="hint">Get one at <a href="https://myaccount.google.com/apppasswords" target="_blank">myaccount.google.com/apppasswords</a></p>
+                    </div>
+                    <div class="form-group row">
+                        <label><input type="checkbox" id="set-weekly-enabled" checked> Send grocery list every Saturday 9 AM</label>
+                    </div>
+                    <button class="btn btn-small btn-secondary" onclick="testEmail()" style="margin-bottom:10px">📧 Send Test Email</button>
+                </div>
+
+                <div class="settings-section">
+                    <h3>🔄 Auto-Check Settings</h3>
+                    <div class="form-group row">
+                        <label><input type="checkbox" id="set-autocheck" checked> Auto-check for new saved videos</label>
+                    </div>
+                    <div class="form-group">
+                        <label>Check every</label>
+                        <select id="set-check-interval">
+                            <option value="3">3 hours</option>
+                            <option value="6" selected>6 hours</option>
+                            <option value="12">12 hours</option>
+                            <option value="24">24 hours</option>
+                        </select>
+                    </div>
+                    <div id="scheduler-status" class="scheduler-status"></div>
+                </div>
+
+                <button class="btn btn-primary btn-full" onclick="saveSettings()">Save All Settings</button>
+            </div>
+        </div>
+    </section>
+
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
