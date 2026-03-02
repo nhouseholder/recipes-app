@@ -96,6 +96,64 @@ async function doLogin() {
     }
 }
 
+async function doBrowserLogin() {
+    const btn = document.getElementById("btn-browser");
+    const errEl = document.getElementById("login-error");
+    errEl.classList.add("hidden");
+
+    btn.disabled = true;
+    btn.textContent = "🔍 Checking browser cookies...";
+
+    try {
+        const res = await fetch("/api/login-browser", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({browser: "auto"}),
+        });
+        const data = await res.json();
+
+        if (data.error) {
+            showError(data.error);
+            btn.disabled = false;
+            btn.textContent = "🌐 Use My Browser Session (Chrome/Firefox/Safari)";
+            return;
+        }
+
+        // Success!
+        showScreen("processing");
+        startPipeline();
+
+    } catch (err) {
+        showError("Connection error. Make sure the app is running.");
+        btn.disabled = false;
+        btn.textContent = "🌐 Use My Browser Session (Chrome/Firefox/Safari)";
+    }
+}
+
+async function doSessionIdLogin() {
+    const sessionid = document.getElementById("ig-sessionid").value.trim();
+    if (!sessionid) { showError("Paste your sessionid value"); return; }
+
+    const errEl = document.getElementById("login-error");
+    errEl.classList.add("hidden");
+
+    try {
+        const res = await fetch("/api/login-sessionid", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({sessionid}),
+        });
+        const data = await res.json();
+
+        if (data.error) { showError(data.error); return; }
+
+        showScreen("processing");
+        startPipeline();
+    } catch (err) {
+        showError("Connection error.");
+    }
+}
+
 function skipLogin() {
     showScreen("processing");
     startLocalProcessing();

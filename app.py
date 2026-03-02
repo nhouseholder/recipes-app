@@ -14,7 +14,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from instagram_fetcher import login, fetch_saved_recipes, get_local_videos, is_logged_in, save_credentials, load_credentials
+from flask_cors import CORS
+from instagram_fetcher import login, login_from_browser, login_with_sessionid, fetch_saved_recipes, get_local_videos, is_logged_in, save_credentials, load_credentials
 from transcriber import transcribe_video
 from recipe_extractor import (
     extract_recipe_with_openai,
@@ -22,11 +23,13 @@ from recipe_extractor import (
     save_recipes,
     load_recipes,
 )
+from ai_extractor import extract_recipe_ai, reextract_all_recipes
 from grocery_list import pick_weekly_recipe, build_grocery_list, format_grocery_list_text, save_to_history
 from notifier import send_weekly_grocery_email, send_test_email
 from scheduler import start_scheduler, stop_scheduler, get_scheduler_status
 
 app = Flask(__name__)
+CORS(app)
 
 DATA_DIR = Path(__file__).parent / "data"
 VIDEOS_DIR = DATA_DIR / "videos"
@@ -96,6 +99,39 @@ def api_login():
         # Use the actual Instagram username (resolved after login, may differ from email)
         actual_username = result.get("username", username)
         _save_config({"instagram_username": actual_username, "login_credential": username})
+
+    return jsonify(result)
+
+
+@app.route("/api/login-browser", methods=["POST"])
+def api_login_browser():
+    """Log in using cookies from user's browser (Chrome/Firefox/Safari)."""
+    data = request.json or {}
+    browser = data.get("browser", "auto")
+
+    result = login_from_browser(browser)
+
+    if result.get("success"):
+        actual_username = result.get("username", "")
+        _save_config({"instagram_username": actual_username, "login_method": "browser"})
+
+    return jsonify(result)
+
+
+@app.route("/api/login-sessionid", methods=["POST"])
+def api_login_sessionid():
+    """Log in using a manually-provided Instagram sessionid cookie."""
+    data = request.json or {}
+    sessionid = data.get("sessionid", "").strip()
+
+    if not sessionid:
+        return jsonify({"error": "Session ID is required"}), 400
+
+    result = login_with_sessionid(sessionid)
+
+    if result.get("success"):
+        actual_username = result.get("username", "")
+        _save_config({"instagram_username": actual_username, "login_method": "sessionid"})
 
     return jsonify(result)
 
@@ -186,18 +222,24 @@ def api_fetch_and_process():
                 _update("extract", i + 1, total, f"Creating recipe {i + 1} of {total}...")
                 caption = video.get("caption", "")
 
-                if api_key:
-                    recipe = extract_recipe_with_openai(transcript["text"], caption, api_key)
-                else:
-                    recipe = extract_recipe_local(transcript["text"], caption)
+                # Try AI extraction first (Cloudflare Workers AI), fall back to local
+                try:
+                    recipe = extract_recipe_ai(transcript["text"], caption,
+                                              source_id=vid_id,
+                                              source_url=video.get("url", ""))
+                except Exception as ai_err:
+                    print(f"[AI] Fallback to local: {ai_err}")
+                    if api_key:
+                        recipe = extract_recipe_with_openai(transcript["text"], caption, api_key)
+                    else:
+                        recipe = extract_recipe_local(transcript["text"], caption)
+                    recipe["source_id"] = vid_id
+                    recipe["source_url"] = video.get("url", "")
+                    recipe["transcript"] = transcript["text"][:1000]
 
                 if "error" in recipe:
                     state["errors"].append(f"{vid_id}: {recipe['error']}")
                     continue
-
-                recipe["source_id"] = vid_id
-                recipe["source_url"] = video.get("url", "")
-                recipe["transcript"] = transcript["text"][:1000]
 
                 recipes.append(recipe)
                 save_recipes(recipes)
@@ -254,18 +296,25 @@ def api_process_local():
                 _update("extract", i + 1, total, f"Creating recipe {i + 1} of {total}...")
                 caption = video.get("caption", "")
 
-                if api_key:
-                    recipe = extract_recipe_with_openai(transcript["text"], caption, api_key)
-                else:
-                    recipe = extract_recipe_local(transcript["text"], caption)
+                # Try AI extraction first (Cloudflare Workers AI), fall back to local
+                try:
+                    recipe = extract_recipe_ai(transcript["text"], caption,
+                                              source_id=vid_id,
+                                              source_url=video.get("url", ""))
+                except Exception as ai_err:
+                    print(f"[AI] Fallback to local: {ai_err}")
+                    if api_key:
+                        recipe = extract_recipe_with_openai(transcript["text"], caption, api_key)
+                    else:
+                        recipe = extract_recipe_local(transcript["text"], caption)
+                    recipe["source_id"] = vid_id
+                    recipe["source_url"] = video.get("url", "")
+                    recipe["transcript"] = transcript["text"][:1000]
 
                 if "error" in recipe:
                     state["errors"].append(f"{vid_id}: {recipe['error']}")
                     continue
 
-                recipe["source_id"] = vid_id
-                recipe["source_url"] = video.get("url", "")
-                recipe["transcript"] = transcript["text"][:1000]
                 recipes.append(recipe)
                 save_recipes(recipes)
 
@@ -318,18 +367,34 @@ def api_get_settings():
         "weekly_email_enabled": config.get("weekly_email_enabled", True),
         "auto_check_enabled": config.get("auto_check_enabled", True),
         "check_interval_hours": config.get("check_interval_hours", 6),
+        # Frontend settings
+        "phone": config.get("sms_phone", ""),
+        "email": config.get("notification_email", config.get("smtp_email", "")),
+        "delivery_method": config.get("delivery_method", "imessage"),
+        "weekly_enabled": config.get("weekly_email_enabled", True),
+        "weekly_day": config.get("weekly_day", "saturday"),
+        "weekly_time": config.get("weekly_time", "09:00"),
+        "recipes_per_week": config.get("recipes_per_week", 3),
     })
 
 
-@app.route("/api/settings", methods=["POST"])
+@app.route("/api/settings", methods=["POST", "PUT"])
 def api_save_settings():
     data = request.json
     updates = {}
     for key in ["openai_api_key", "whisper_model",
                  "smtp_email", "smtp_password", "notification_email",
-                 "weekly_email_enabled", "auto_check_enabled", "check_interval_hours"]:
+                 "weekly_email_enabled", "auto_check_enabled", "check_interval_hours",
+                 "delivery_method", "weekly_day", "weekly_time", "recipes_per_week"]:
         if key in data:
             updates[key] = data[key]
+    # Map frontend field names to config keys
+    if "phone" in data:
+        updates["sms_phone"] = data["phone"]
+    if "email" in data:
+        updates["notification_email"] = data["email"]
+    if "weekly_enabled" in data:
+        updates["weekly_email_enabled"] = data["weekly_enabled"]
     _save_config(updates)
     return jsonify({"message": "Settings saved!"})
 
@@ -342,6 +407,13 @@ def api_videos():
 @app.route("/videos/<path:filename>")
 def serve_video(filename):
     return send_from_directory(str(VIDEOS_DIR), filename)
+
+
+@app.route("/api/cards/<path:filename>")
+def serve_card(filename):
+    """Serve recipe card images from data/cards/."""
+    cards_dir = DATA_DIR / "cards"
+    return send_from_directory(str(cards_dir), filename)
 
 
 # ═══════════════════════════════════════════════════════════
@@ -359,7 +431,7 @@ def api_grocery_pick():
     return jsonify({"recipe": recipe, "grocery": grocery})
 
 
-@app.route("/api/grocery/build/<int:idx>", methods=["POST"])
+@app.route("/api/grocery/build/<int:idx>", methods=["GET", "POST"])
 def api_grocery_build(idx):
     """Build grocery list for a specific recipe by index."""
     recipes = load_recipes()
@@ -425,6 +497,55 @@ def api_test_email():
     return jsonify({"error": result.get("error", "Failed")}), 500
 
 
+@app.route("/api/sms/send-recipes", methods=["POST"])
+def api_sms_send_recipes():
+    """Text random recipes to phone."""
+    from notifier import send_recipe_texts
+    data = request.json or {}
+    count = data.get("count", 3)
+    result = send_recipe_texts(count)
+    if result.get("success"):
+        return jsonify(result)
+    return jsonify(result), 500
+
+
+@app.route("/api/recipe-cards/send", methods=["POST"])
+def api_send_recipe_cards():
+    """Generate beautiful recipe card JPGs and email them."""
+    from notifier import send_recipe_cards
+    data = request.json or {}
+    count = data.get("count", 3)
+    result = send_recipe_cards(count)
+    if result.get("success"):
+        return jsonify(result)
+    return jsonify(result), 500
+
+
+@app.route("/api/recipe-cards/text", methods=["POST"])
+def api_text_recipe_cards():
+    """Generate recipe card JPGs and send via iMessage."""
+    from notifier import imessage_recipe_cards
+    data = request.json or {}
+    count = data.get("count", 3)
+    recipe_index = data.get("recipe_index", None)
+    result = imessage_recipe_cards(count, recipe_index=recipe_index)
+    if result.get("success"):
+        return jsonify(result)
+    return jsonify(result), 500
+
+
+@app.route("/api/recipe-text/send", methods=["POST"])
+def api_text_recipe_plain():
+    """Send recipes as plain text via iMessage."""
+    from notifier import imessage_recipe_text
+    data = request.json or {}
+    count = data.get("count", 3)
+    result = imessage_recipe_text(count)
+    if result.get("success"):
+        return jsonify(result)
+    return jsonify(result), 500
+
+
 # ═══════════════════════════════════════════════════════════
 #  API: Scheduler
 # ═══════════════════════════════════════════════════════════
@@ -448,6 +569,53 @@ def api_scheduler_send_weekly():
     from scheduler import send_weekly_grocery_list
     threading.Thread(target=send_weekly_grocery_list, daemon=True).start()
     return jsonify({"message": "Sending weekly grocery list..."})
+
+
+# ═══════════════════════════════════════════════════════════
+#  AI Re-extraction
+# ═══════════════════════════════════════════════════════════
+
+reextract_state = {"active": False, "current": 0, "total": 0, "message": "", "results": None}
+
+@app.route("/api/reextract", methods=["POST"])
+def api_reextract():
+    """Re-extract all recipes using Cloudflare Workers AI (Llama 3.3 70B)."""
+    if reextract_state["active"]:
+        return jsonify({"error": "Re-extraction already in progress"}), 409
+
+    def run_reextract():
+        reextract_state["active"] = True
+        reextract_state["current"] = 0
+        reextract_state["results"] = None
+        try:
+            def progress(current, total, title):
+                reextract_state["current"] = current
+                reextract_state["total"] = total
+                reextract_state["message"] = f"Processing {current}/{total}: {title[:40]}"
+
+            result = reextract_all_recipes(RECIPES_FILE, progress_callback=progress)
+            reextract_state["results"] = {
+                "total": result["total"],
+                "improved": result["improved"],
+                "failed": result["failed"],
+                "removed": result["removed"],
+                "recipe_count": len(result.get("recipes", [])),
+            }
+            reextract_state["message"] = f"Done! {result['improved']} improved, {result['failed']} failed, {result['removed']} removed"
+        except Exception as e:
+            reextract_state["message"] = f"Error: {str(e)[:200]}"
+            reextract_state["results"] = {"error": str(e)[:200]}
+        finally:
+            reextract_state["active"] = False
+
+    threading.Thread(target=run_reextract, daemon=True).start()
+    return jsonify({"message": "Re-extraction started with Llama 3.3 70B..."})
+
+
+@app.route("/api/reextract/status")
+def api_reextract_status():
+    """Check re-extraction progress."""
+    return jsonify(reextract_state)
 
 
 # ═══════════════════════════════════════════════════════════

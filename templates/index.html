@@ -41,9 +41,23 @@
 
             <p id="login-error" class="error-msg hidden"></p>
 
-            <div class="divider"><span>or</span></div>
+            <div class="divider"><span>or — recommended if Instagram blocks login</span></div>
 
-            <p class="alt-text">Already have video files? <a href="#" onclick="skipLogin()">Skip login →</a></p>
+            <button id="btn-browser" class="btn btn-secondary btn-full" onclick="doBrowserLogin()" style="margin-bottom:10px">
+                🌐 Use My Browser Session (Chrome/Firefox/Safari)
+            </button>
+            <p class="hint" style="text-align:center;margin-bottom:14px">Already logged into Instagram in your browser? This imports that session — no new login needed.</p>
+
+            <div id="sessionid-section" class="hidden" style="margin-bottom:14px">
+                <div class="form-group">
+                    <label>Instagram Session ID (from browser cookies)</label>
+                    <input type="text" id="ig-sessionid" placeholder="Paste sessionid value here">
+                    <p class="hint">Open Instagram in Chrome → F12 → Application → Cookies → instagram.com → copy the <b>sessionid</b> value</p>
+                </div>
+                <button class="btn btn-primary btn-full" onclick="doSessionIdLogin()">Log In with Session ID</button>
+            </div>
+
+            <p class="alt-text"><a href="#" onclick="document.getElementById('sessionid-section').classList.toggle('hidden')">Manual session ID →</a> · <a href="#" onclick="skipLogin()">Skip login →</a></p>
 
             <div class="trust-note">
                 <p>🔒 Credentials saved locally so the app can auto-check for new recipes. Never sent anywhere except Instagram.</p>
