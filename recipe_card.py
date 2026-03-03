@@ -4,6 +4,7 @@ Creates beautiful, phone-friendly JPG recipe cards with grocery lists.
 Each card is a single image ready to be sent via email/MMS.
 """
 
+import hashlib
 import json
 import random
 import textwrap
@@ -15,13 +16,13 @@ CARDS_DIR = DATA_DIR / "cards"
 RECIPES_FILE = DATA_DIR / "recipes.json"
 
 # ── Design constants ─────────────────────────────────────────
-SCALE = 2  # 2x for Retina / high-DPI screens
+SCALE = 3  # 3x for Retina / high-DPI screens
 CARD_WIDTH = 1080 * SCALE
 MAX_HEIGHT = 4000 * SCALE  # safety cap
 PADDING = 60 * SCALE
 CONTENT_WIDTH = CARD_WIDTH - PADDING * 2
 
-# Color palette — warm, appetizing, modern
+# Color palette — warm, appetizing, modern (defaults / fallback)
 BG_COLOR = (25, 25, 35)           # deep navy
 CARD_BG = (35, 37, 50)            # slightly lighter card
 HEADER_BG = (220, 80, 60)         # warm red-orange accent
@@ -34,6 +35,115 @@ DIVIDER_COLOR = (55, 58, 75)      # subtle line
 AISLE_BG = (45, 48, 65)           # section background
 CHECKBOX_COLOR = (100, 105, 125)  # checkbox outline
 BADGE_BG = (50, 55, 75)           # time/serving badge bg
+
+# ── Unique color palettes ────────────────────────────────────
+# Each recipe gets a deterministic palette based on its title hash,
+# so every card looks distinct but the same recipe always matches.
+COLOR_PALETTES = [
+    {   # 0: Ember — warm red-orange (original)
+        "bg": (25, 25, 35), "header": (220, 80, 60),
+        "accent": (255, 140, 66), "accent2": (120, 200, 150),
+        "text_white": (240, 240, 245), "text_light": (190, 195, 210),
+        "text_dim": (130, 135, 155), "divider": (55, 58, 75),
+        "aisle_bg": (45, 48, 65), "checkbox": (100, 105, 125),
+        "badge_bg": (50, 55, 75), "grocery_accent": (255, 200, 80),
+    },
+    {   # 1: Ocean — deep teal with aqua highlights
+        "bg": (18, 30, 38), "header": (30, 130, 150),
+        "accent": (80, 210, 210), "accent2": (255, 150, 120),
+        "text_white": (235, 242, 245), "text_light": (180, 200, 210),
+        "text_dim": (120, 145, 158), "divider": (45, 65, 78),
+        "aisle_bg": (35, 55, 68), "checkbox": (85, 115, 130),
+        "badge_bg": (40, 60, 72), "grocery_accent": (255, 200, 100),
+    },
+    {   # 2: Forest — earthy green with golden accents
+        "bg": (20, 30, 22), "header": (55, 120, 70),
+        "accent": (180, 220, 100), "accent2": (220, 170, 100),
+        "text_white": (238, 242, 235), "text_light": (185, 200, 185),
+        "text_dim": (125, 145, 128), "divider": (50, 65, 52),
+        "aisle_bg": (40, 55, 42), "checkbox": (90, 110, 92),
+        "badge_bg": (45, 60, 48), "grocery_accent": (240, 200, 90),
+    },
+    {   # 3: Berry — rich purple with lavender
+        "bg": (30, 20, 35), "header": (140, 60, 130),
+        "accent": (210, 140, 220), "accent2": (120, 210, 180),
+        "text_white": (242, 238, 245), "text_light": (200, 190, 210),
+        "text_dim": (140, 130, 155), "divider": (62, 50, 72),
+        "aisle_bg": (52, 42, 62), "checkbox": (110, 100, 125),
+        "badge_bg": (58, 48, 68), "grocery_accent": (255, 190, 100),
+    },
+    {   # 4: Sunset — amber gold with cool blue contrast
+        "bg": (32, 25, 20), "header": (200, 120, 40),
+        "accent": (255, 190, 70), "accent2": (160, 200, 220),
+        "text_white": (245, 242, 235), "text_light": (210, 200, 185),
+        "text_dim": (155, 140, 125), "divider": (70, 58, 48),
+        "aisle_bg": (58, 50, 40), "checkbox": (120, 108, 95),
+        "badge_bg": (62, 55, 45), "grocery_accent": (255, 210, 110),
+    },
+    {   # 5: Terracotta — warm clay with sage
+        "bg": (35, 25, 22), "header": (185, 95, 65),
+        "accent": (240, 160, 110), "accent2": (130, 185, 160),
+        "text_white": (245, 240, 238), "text_light": (210, 195, 190),
+        "text_dim": (150, 135, 130), "divider": (72, 55, 48),
+        "aisle_bg": (60, 46, 40), "checkbox": (120, 105, 98),
+        "badge_bg": (65, 50, 44), "grocery_accent": (255, 200, 100),
+    },
+    {   # 6: Coral — midnight with salmon pink
+        "bg": (18, 18, 28), "header": (220, 100, 100),
+        "accent": (255, 155, 140), "accent2": (140, 190, 230),
+        "text_white": (240, 238, 242), "text_light": (195, 192, 205),
+        "text_dim": (135, 132, 150), "divider": (52, 52, 68),
+        "aisle_bg": (42, 42, 58), "checkbox": (100, 100, 120),
+        "badge_bg": (48, 48, 64), "grocery_accent": (255, 200, 120),
+    },
+    {   # 7: Sage — soft green kitchen
+        "bg": (25, 30, 25), "header": (100, 140, 90),
+        "accent": (180, 215, 160), "accent2": (215, 175, 130),
+        "text_white": (240, 244, 238), "text_light": (192, 200, 190),
+        "text_dim": (132, 142, 130), "divider": (52, 60, 52),
+        "aisle_bg": (42, 50, 42), "checkbox": (95, 108, 95),
+        "badge_bg": (48, 56, 48), "grocery_accent": (230, 200, 100),
+    },
+    {   # 8: Espresso — rich coffee brown
+        "bg": (30, 22, 18), "header": (120, 80, 55),
+        "accent": (210, 170, 120), "accent2": (140, 200, 180),
+        "text_white": (244, 240, 235), "text_light": (205, 195, 185),
+        "text_dim": (148, 138, 128), "divider": (65, 52, 44),
+        "aisle_bg": (55, 44, 36), "checkbox": (112, 100, 90),
+        "badge_bg": (60, 48, 40), "grocery_accent": (240, 195, 90),
+    },
+    {   # 9: Plum — deep plum with gold
+        "bg": (28, 20, 32), "header": (120, 50, 100),
+        "accent": (230, 180, 80), "accent2": (120, 200, 200),
+        "text_white": (242, 238, 244), "text_light": (200, 192, 208),
+        "text_dim": (142, 132, 152), "divider": (58, 48, 65),
+        "aisle_bg": (48, 38, 55), "checkbox": (108, 98, 118),
+        "badge_bg": (54, 44, 60), "grocery_accent": (255, 210, 100),
+    },
+    {   # 10: Slate — cool gray with rust accent
+        "bg": (25, 28, 32), "header": (175, 85, 55),
+        "accent": (230, 145, 90), "accent2": (110, 175, 220),
+        "text_white": (240, 242, 245), "text_light": (192, 198, 208),
+        "text_dim": (130, 138, 150), "divider": (54, 58, 66),
+        "aisle_bg": (44, 48, 56), "checkbox": (98, 104, 116),
+        "badge_bg": (50, 54, 62), "grocery_accent": (255, 195, 90),
+    },
+    {   # 11: Rose — dusty rose with mint
+        "bg": (32, 22, 28), "header": (180, 75, 100),
+        "accent": (240, 150, 170), "accent2": (150, 210, 180),
+        "text_white": (244, 238, 240), "text_light": (208, 192, 200),
+        "text_dim": (148, 132, 142), "divider": (66, 48, 56),
+        "aisle_bg": (56, 40, 48), "checkbox": (115, 98, 108),
+        "badge_bg": (60, 44, 52), "grocery_accent": (255, 200, 110),
+    },
+]
+
+
+def _pick_palette(recipe: dict) -> dict:
+    """Deterministically pick a color palette based on recipe title."""
+    title = recipe.get("title", "")
+    h = int(hashlib.md5(title.encode()).hexdigest(), 16)
+    return COLOR_PALETTES[h % len(COLOR_PALETTES)]
 
 # ── Font setup ───────────────────────────────────────────────
 def _load_fonts():
@@ -149,7 +259,22 @@ def generate_recipe_card(recipe: dict, grocery: dict = None) -> Path:
     
     fonts = _get_fonts()
     CARDS_DIR.mkdir(parents=True, exist_ok=True)
-    
+
+    # ── Pick a unique color palette for this recipe ──
+    pal = _pick_palette(recipe)
+    BG_COLOR = pal["bg"]
+    HEADER_BG = pal["header"]
+    ACCENT = pal["accent"]
+    ACCENT2 = pal["accent2"]
+    TEXT_WHITE = pal["text_white"]
+    TEXT_LIGHT = pal["text_light"]
+    TEXT_DIM = pal["text_dim"]
+    DIVIDER_COLOR = pal["divider"]
+    AISLE_BG = pal["aisle_bg"]
+    CHECKBOX_COLOR = pal["checkbox"]
+    BADGE_BG = pal["badge_bg"]
+    GROCERY_ACCENT = pal["grocery_accent"]
+
     # ── Phase 1: Calculate total height needed ──
     # Create a temp image just for text measurements
     tmp = Image.new("RGB", (CARD_WIDTH, 100))
@@ -304,7 +429,7 @@ def generate_recipe_card(recipe: dict, grocery: dict = None) -> Path:
     y += 20 * SCALE
     
     # ── Grocery List Section ──
-    y = _draw_section_header(draw, y, "GROCERY LIST", (255, 200, 80), fonts)
+    y = _draw_section_header(draw, y, "GROCERY LIST", GROCERY_ACCENT, fonts)
     y += 4 * SCALE
     
     # Aisle-grouped items
@@ -349,7 +474,7 @@ def generate_recipe_card(recipe: dict, grocery: dict = None) -> Path:
     
     # Crop to actual content height
     img = img.crop((0, 0, CARD_WIDTH, min(y + 30 * SCALE, total_height)))
-    img.save(filepath, "JPEG", quality=95)
+    img.save(filepath, "JPEG", quality=98)
     
     return filepath
 
