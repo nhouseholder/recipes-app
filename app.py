@@ -29,7 +29,7 @@ from recipe_extractor import (
     save_recipes,
     load_recipes,
 )
-from ai_extractor import extract_recipe_ai, reextract_all_recipes
+from ai_extractor import extract_recipe_ai, reextract_all_recipes, create_recipe_from_caption
 from grocery_list import pick_weekly_recipe, build_grocery_list, format_grocery_list_text, save_to_history
 from notifier import send_weekly_grocery_email, send_test_email
 from scheduler import start_scheduler, stop_scheduler, get_scheduler_status
@@ -615,11 +615,25 @@ def api_try_recipe():
 
             video_path = VIDEOS_DIR / f"try_{shortcode}.mp4"
 
-            if not video_path.exists():
-                # Step A: Get media_id from Instagram oembed (public, no auth needed)
-                oembed_url = f"https://www.instagram.com/api/v1/oembed/?url={url}"
+            # Step A: Get media_id + title from Instagram oembed (public, no auth needed)
+            oembed_url = f"https://www.instagram.com/api/v1/oembed/?url={url}"
+            oembed_title = ""
+            try:
                 oembed_r = req.get(oembed_url, timeout=10)
-                if oembed_r.status_code != 200:
+                if oembed_r.status_code == 200:
+                    oembed_data = oembed_r.json()
+                    oembed_title = oembed_data.get("title", "")
+            except Exception:
+                pass
+
+            if not video_path.exists():
+                if not oembed_title:
+                    # Retry oembed — we need media_id
+                    try:
+                        oembed_r = req.get(oembed_url, timeout=10)
+                    except Exception:
+                        pass
+                if not hasattr(oembed_r, 'status_code') or oembed_r.status_code != 200:
                     job["status"] = "error"
                     job["phase"] = "error"
                     job["error"] = "Couldn't find this post on Instagram. Make sure the URL is correct and the post is public."
@@ -667,13 +681,11 @@ def api_try_recipe():
                     job["message"] = job["error"]
                     return
 
-            # ── Phase 2: Transcribe ──────────────────────
+            # ── Phase 2: Transcribe (use 'small' model for better quality) ─
             job["phase"] = "transcribing"
             job["message"] = "Transcribing audio with Whisper..."
 
-            config = _load_config()
-            model_size = config.get("whisper_model", os.getenv("WHISPER_MODEL", "base"))
-            transcript = transcribe_video(str(video_path), model_size)
+            transcript = transcribe_video(str(video_path), "small")
 
             if transcript.get("error") or not transcript.get("text"):
                 job["status"] = "error"
@@ -686,14 +698,32 @@ def api_try_recipe():
             job["phase"] = "extracting"
             job["message"] = "AI is creating your recipe with Llama 3.3 70B..."
 
+            # Use oembed title as caption context for better AI extraction
+            caption = oembed_title if oembed_title else ""
             try:
-                recipe = extract_recipe_ai(transcript["text"], "",
+                recipe = extract_recipe_ai(transcript["text"], caption,
                                           source_id=f"try_{shortcode}",
                                           source_url=url)
             except Exception:
-                recipe = extract_recipe_local(transcript["text"], "")
+                recipe = extract_recipe_local(transcript["text"], caption)
                 recipe["source_id"] = f"try_{shortcode}"
                 recipe["source_url"] = url
+
+            # If transcript-based extraction failed but we have a caption,
+            # retry with caption-only prompt (for music/text-overlay videos)
+            if recipe.get("error") and caption:
+                job["message"] = "Transcript unclear — using video caption to create recipe..."
+                try:
+                    from ai_extractor import _clean_recipe
+                    caption_recipe = create_recipe_from_caption(caption)
+                    caption_recipe = _clean_recipe(caption_recipe)
+                    if not caption_recipe.get("error"):
+                        caption_recipe["source_id"] = f"try_{shortcode}"
+                        caption_recipe["source_url"] = url
+                        caption_recipe["transcript"] = transcript["text"][:500]
+                        recipe = caption_recipe
+                except Exception:
+                    pass
 
             if recipe.get("error"):
                 job["status"] = "error"

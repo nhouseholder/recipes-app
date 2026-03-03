@@ -12,14 +12,16 @@ DATA_DIR = Path(__file__).parent / "data"
 VIDEOS_DIR = DATA_DIR / "videos"
 
 _model = None
+_model_size = None
 
 
 def get_model(model_size: str = "base"):
-    """Load Whisper model (cached after first load)."""
-    global _model
-    if _model is None:
-        print(f"[Whisper] Loading '{model_size}' model (first time may download ~140MB)...")
+    """Load Whisper model (cached after first load; reloads if size changes)."""
+    global _model, _model_size
+    if _model is None or _model_size != model_size:
+        print(f"[Whisper] Loading '{model_size}' model (first time may download)...")
         _model = whisper.load_model(model_size)
+        _model_size = model_size
         print("[Whisper] Model loaded.")
     return _model
 

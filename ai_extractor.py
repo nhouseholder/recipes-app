@@ -100,6 +100,11 @@ def _call_llama(transcript: str, caption: str = "", max_tokens: int = 2048) -> d
         "max_tokens": max_tokens,
     }
 
+    return _send_llama_request(token, payload)
+
+
+def _send_llama_request(token: str, payload: dict) -> dict:
+    """Send a request to Cloudflare Workers AI. Handles retries on 401."""
     ctx = ssl.create_default_context()
 
     for attempt in range(2):
@@ -126,6 +131,51 @@ def _call_llama(transcript: str, caption: str = "", max_tokens: int = 2048) -> d
         if isinstance(ai_response, dict):
             return _normalize_recipe(ai_response)
         return _parse_ai_response(ai_response)
+
+
+CAPTION_SYSTEM_PROMPT = """You are a professional recipe writer. You receive description of a dish from a cooking video. Your job is to create a clean, well-structured recipe for this dish using your culinary knowledge.
+
+CRITICAL RULES:
+1. Create a complete, authentic recipe for the described dish.
+2. Use standard amounts and measurements.
+3. NO SEED OILS — Use olive oil, butter, avocado oil, or coconut oil instead.
+4. PROFESSIONAL INSTRUCTIONS — Write clear, numbered steps a home cook can follow.
+5. MINIMIZE INGREDIENTS — Keep it simple and practical.
+6. BASIC EQUIPMENT — Only: skillet/pan, baking sheet, oven, pot/saucepan, mixing bowl, cutting board, knife, basic utensils.
+
+Respond with ONLY valid JSON (no markdown, no backticks, no extra text):
+{
+  "title": "Proper Recipe Name",
+  "description": "One sentence about the dish",
+  "prep_time": "X minutes",
+  "cook_time": "X minutes",
+  "servings": "X",
+  "ingredients": [
+    {"amount": "1 lb", "item": "chicken breast, diced"},
+    {"amount": "2 tbsp", "item": "olive oil"}
+  ],
+  "instructions": [
+    "Dice the chicken breast into 1-inch cubes.",
+    "Heat olive oil in a skillet over medium-high heat."
+  ],
+  "equipment": ["skillet", "cutting board"],
+  "category": "dinner|lunch|breakfast|snack|dessert|side"
+}"""
+
+
+def create_recipe_from_caption(caption: str) -> dict:
+    """Generate a recipe based on a video caption/title when transcription fails."""
+    token = _get_token()
+
+    payload = {
+        "messages": [
+            {"role": "system", "content": CAPTION_SYSTEM_PROMPT},
+            {"role": "user", "content": f"Create a recipe for this dish from a cooking video:\n\n{caption}"},
+        ],
+        "max_tokens": 2048,
+    }
+
+    return _send_llama_request(token, payload)
 
 
 def _normalize_recipe(raw: dict) -> dict:
