@@ -8,6 +8,7 @@ import os
 import json
 import threading
 import logging
+import uuid
 from pathlib import Path
 from flask import Flask, render_template, jsonify, request, send_from_directory
 from dotenv import load_dotenv
@@ -544,6 +545,172 @@ def api_text_recipe_plain():
     if result.get("success"):
         return jsonify(result)
     return jsonify(result), 500
+
+
+# ═══════════════════════════════════════════════════════════
+#  API: Try It — One-off recipe from any Instagram URL
+# ═══════════════════════════════════════════════════════════
+
+# Per-job state keyed by job_id
+try_jobs = {}
+
+
+@app.route("/api/try-recipe", methods=["POST"])
+def api_try_recipe():
+    """
+    Accept an Instagram video URL + phone number.
+    Downloads video → Whisper transcribe → Llama extract → generate card → iMessage.
+    Returns a job_id for status polling.
+    """
+    data = request.json or {}
+    url = data.get("url", "").strip()
+    phone = data.get("phone", "").strip()
+
+    if not url:
+        return jsonify({"error": "Instagram URL is required"}), 400
+    if not phone:
+        return jsonify({"error": "Phone number is required"}), 400
+
+    # Basic URL validation
+    if "instagram.com" not in url and "instagr.am" not in url:
+        return jsonify({"error": "Please enter a valid Instagram URL"}), 400
+
+    # Format phone
+    digits = "".join(c for c in phone if c.isdigit())
+    if len(digits) == 10:
+        phone_formatted = f"+1{digits}"
+    elif len(digits) == 11 and digits.startswith("1"):
+        phone_formatted = f"+{digits}"
+    else:
+        phone_formatted = f"+{digits}"
+
+    job_id = uuid.uuid4().hex[:12]
+    try_jobs[job_id] = {
+        "status": "queued",
+        "phase": "starting",
+        "message": "Starting...",
+        "recipe": None,
+        "error": None,
+    }
+
+    def run_try_recipe():
+        import subprocess
+        import re
+        job = try_jobs[job_id]
+
+        try:
+            # ── Phase 1: Download video ──────────────────
+            job["phase"] = "downloading"
+            job["status"] = "running"
+            job["message"] = "Downloading video from Instagram..."
+
+            # Extract shortcode from URL
+            shortcode_match = re.search(r'(?:reel|p|reels)/([A-Za-z0-9_-]+)', url)
+            shortcode = shortcode_match.group(1) if shortcode_match else uuid.uuid4().hex[:11]
+
+            video_path = VIDEOS_DIR / f"try_{shortcode}.mp4"
+
+            if not video_path.exists():
+                result = subprocess.run(
+                    ["yt-dlp", "--no-playlist", "-f", "best[ext=mp4]/best",
+                     "-o", str(video_path), "--no-check-certificates", url],
+                    capture_output=True, text=True, timeout=120,
+                )
+                if result.returncode != 0 or not video_path.exists():
+                    job["status"] = "error"
+                    job["phase"] = "error"
+                    job["error"] = "Couldn't download this video. Make sure it's a public Instagram reel/video."
+                    job["message"] = job["error"]
+                    return
+
+            # ── Phase 2: Transcribe ──────────────────────
+            job["phase"] = "transcribing"
+            job["message"] = "Transcribing audio with Whisper..."
+
+            config = _load_config()
+            model_size = config.get("whisper_model", os.getenv("WHISPER_MODEL", "base"))
+            transcript = transcribe_video(str(video_path), model_size)
+
+            if transcript.get("error") or not transcript.get("text"):
+                job["status"] = "error"
+                job["phase"] = "error"
+                job["error"] = "Couldn't transcribe the audio. The video may not have speech."
+                job["message"] = job["error"]
+                return
+
+            # ── Phase 3: Extract recipe with Llama 3.3 70B ─
+            job["phase"] = "extracting"
+            job["message"] = "AI is creating your recipe with Llama 3.3 70B..."
+
+            try:
+                recipe = extract_recipe_ai(transcript["text"], "",
+                                          source_id=f"try_{shortcode}",
+                                          source_url=url)
+            except Exception:
+                recipe = extract_recipe_local(transcript["text"], "")
+                recipe["source_id"] = f"try_{shortcode}"
+                recipe["source_url"] = url
+
+            if recipe.get("error"):
+                job["status"] = "error"
+                job["phase"] = "error"
+                job["error"] = "This video doesn't appear to contain a recipe."
+                job["message"] = job["error"]
+                return
+
+            recipe["transcript"] = transcript["text"][:1000]
+            job["recipe"] = recipe
+
+            # ── Phase 4: Generate recipe card ────────────
+            job["phase"] = "generating"
+            job["message"] = "Generating your beautiful recipe card..."
+
+            from recipe_card import generate_recipe_card
+            grocery = build_grocery_list(recipe)
+            card_path = generate_recipe_card(recipe, grocery)
+
+            # ── Phase 5: Send via iMessage ───────────────
+            job["phase"] = "sending"
+            job["message"] = f"Texting recipe card to {phone}..."
+
+            from notifier import _send_imessage_text
+            from urllib.parse import quote
+
+            CARDS_BASE_URL = "https://recipecardsai.pages.dev/api/cards"
+            filename = Path(card_path).name
+            card_url = f"{CARDS_BASE_URL}/{quote(filename)}"
+            title = recipe.get("title", "Your Recipe")
+
+            msg = f"🍳 {title}\n\nHere's your recipe card!\n{card_url}"
+            success = _send_imessage_text(phone_formatted, msg)
+
+            if success:
+                job["status"] = "done"
+                job["phase"] = "done"
+                job["message"] = f"Recipe card for \"{title}\" sent to {phone}!"
+            else:
+                job["status"] = "error"
+                job["phase"] = "error"
+                job["error"] = "Recipe created but failed to send via iMessage. The server must be running on a Mac with Messages.app."
+                job["message"] = job["error"]
+
+        except Exception as e:
+            job["status"] = "error"
+            job["phase"] = "error"
+            job["error"] = f"Something went wrong: {str(e)[:200]}"
+            job["message"] = job["error"]
+
+    threading.Thread(target=run_try_recipe, daemon=True).start()
+    return jsonify({"job_id": job_id, "message": "Processing started!"})
+
+
+@app.route("/api/try-recipe/<job_id>")
+def api_try_recipe_status(job_id):
+    """Poll the status of a try-recipe job."""
+    job = try_jobs.get(job_id)
+    if not job:
+        return jsonify({"error": "Job not found"}), 404
+    return jsonify(job)
 
 
 # ═══════════════════════════════════════════════════════════
