@@ -305,7 +305,7 @@ def _send_imessage_text(phone: str, text: str) -> bool:
         '  set msg to item 2 of argv',
         '  tell application "Messages"',
         '    set targetService to 1st account whose service type = iMessage',
-        '    set targetBuddy to participant phoneNum of targetService',
+        '    set targetBuddy to buddy phoneNum of targetService',
         '    send msg to targetBuddy',
         '  end tell',
         'end run',
