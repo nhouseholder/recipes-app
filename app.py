@@ -16,7 +16,12 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from flask_cors import CORS
-from instagram_fetcher import login, login_from_browser, login_with_sessionid, fetch_saved_recipes, get_local_videos, is_logged_in, save_credentials, load_credentials
+from instagram_fetcher import (
+    login, login_from_browser, login_with_sessionid,
+    fetch_saved_recipes, get_local_videos, is_logged_in,
+    save_credentials, load_credentials,
+    _get_authenticated_session, _download_video_direct,
+)
 from transcriber import transcribe_video
 from recipe_extractor import (
     extract_recipe_with_openai,
@@ -594,12 +599,12 @@ def api_try_recipe():
     }
 
     def run_try_recipe():
-        import subprocess
         import re
+        import requests as req
         job = try_jobs[job_id]
 
         try:
-            # ── Phase 1: Download video ──────────────────
+            # ── Phase 1: Download video via Instagram API ─
             job["phase"] = "downloading"
             job["status"] = "running"
             job["message"] = "Downloading video from Instagram..."
@@ -611,15 +616,54 @@ def api_try_recipe():
             video_path = VIDEOS_DIR / f"try_{shortcode}.mp4"
 
             if not video_path.exists():
-                result = subprocess.run(
-                    ["yt-dlp", "--no-playlist", "-f", "best[ext=mp4]/best",
-                     "-o", str(video_path), "--no-check-certificates", url],
-                    capture_output=True, text=True, timeout=120,
-                )
-                if result.returncode != 0 or not video_path.exists():
+                # Step A: Get media_id from Instagram oembed (public, no auth needed)
+                oembed_url = f"https://www.instagram.com/api/v1/oembed/?url={url}"
+                oembed_r = req.get(oembed_url, timeout=10)
+                if oembed_r.status_code != 200:
                     job["status"] = "error"
                     job["phase"] = "error"
-                    job["error"] = "Couldn't download this video. Make sure it's a public Instagram reel/video."
+                    job["error"] = "Couldn't find this post on Instagram. Make sure the URL is correct and the post is public."
+                    job["message"] = job["error"]
+                    return
+
+                raw_media_id = oembed_r.json().get("media_id", "")
+                media_id = raw_media_id.split("_")[0] if "_" in raw_media_id else raw_media_id
+                if not media_id:
+                    job["status"] = "error"
+                    job["phase"] = "error"
+                    job["error"] = "Couldn't get media info from Instagram."
+                    job["message"] = job["error"]
+                    return
+
+                # Step B: Get authenticated session and fetch video URL via mobile API
+                saved_user, saved_pass = load_credentials()
+                session, _ = _get_authenticated_session(saved_user or "", saved_pass or "")
+
+                info_r = session.get(f"https://i.instagram.com/api/v1/media/{media_id}/info/", timeout=15)
+                video_download_url = ""
+                if info_r.status_code == 200:
+                    for item in info_r.json().get("items", []):
+                        vv = item.get("video_versions", [])
+                        if vv:
+                            video_download_url = vv[0].get("url", "")
+                            break
+                        for ci in item.get("carousel_media", []):
+                            cvv = ci.get("video_versions", [])
+                            if cvv:
+                                video_download_url = cvv[0].get("url", "")
+                                break
+                        if video_download_url:
+                            break
+
+                if video_download_url:
+                    dl_result = _download_video_direct(session, video_download_url, f"try_{shortcode}")
+                    if dl_result:
+                        video_path = Path(dl_result)
+
+                if not video_path.exists():
+                    job["status"] = "error"
+                    job["phase"] = "error"
+                    job["error"] = "Couldn't download this video. It may not be a video or may be private."
                     job["message"] = job["error"]
                     return
 
