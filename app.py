@@ -35,7 +35,31 @@ from notifier import send_weekly_grocery_email, send_test_email
 from scheduler import start_scheduler, stop_scheduler, get_scheduler_status
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, expose_headers=["X-Session-ID"])
+
+# ── Per-visitor session store ──
+# Each visitor gets independent Instagram auth via X-Session-ID header.
+# The server owner's credentials remain in config.json for Try It / background tasks.
+visitor_sessions = {}  # {session_id: {"username": str, "logged_in": bool}}
+
+def _get_visitor_id() -> str:
+    """Get the visitor's session ID from the X-Session-ID header."""
+    return request.headers.get("X-Session-ID", "")
+
+def _get_visitor_session() -> dict:
+    """Get or create the current visitor's session state."""
+    vid = _get_visitor_id()
+    if not vid:
+        return {}
+    if vid not in visitor_sessions:
+        visitor_sessions[vid] = {"username": "", "logged_in": False}
+    return visitor_sessions[vid]
+
+def _set_visitor_auth(username: str, logged_in: bool = True):
+    """Store auth state for the current visitor."""
+    vid = _get_visitor_id()
+    if vid:
+        visitor_sessions[vid] = {"username": username, "logged_in": logged_in}
 
 DATA_DIR = Path(__file__).parent / "data"
 VIDEOS_DIR = DATA_DIR / "videos"
@@ -90,7 +114,7 @@ def index():
 
 @app.route("/api/login", methods=["POST"])
 def api_login():
-    """Log in to Instagram."""
+    """Log in to Instagram (per-visitor session)."""
     data = request.json
     username = data.get("username", "").strip()
     password = data.get("password", "").strip()
@@ -99,12 +123,12 @@ def api_login():
     if not username or not password:
         return jsonify({"error": "Username and password are required"}), 400
 
-    result = login(username, password, two_fa)
+    # persist=False so visitor logins don't overwrite the server owner's saved credentials
+    result = login(username, password, two_fa, persist=False)
 
     if result.get("success"):
-        # Use the actual Instagram username (resolved after login, may differ from email)
         actual_username = result.get("username", username)
-        _save_config({"instagram_username": actual_username, "login_credential": username})
+        _set_visitor_auth(actual_username, True)
 
     return jsonify(result)
 
@@ -119,7 +143,7 @@ def api_login_browser():
 
     if result.get("success"):
         actual_username = result.get("username", "")
-        _save_config({"instagram_username": actual_username, "login_method": "browser"})
+        _set_visitor_auth(actual_username, True)
 
     return jsonify(result)
 
@@ -137,26 +161,42 @@ def api_login_sessionid():
 
     if result.get("success"):
         actual_username = result.get("username", "")
-        _save_config({"instagram_username": actual_username, "login_method": "sessionid"})
+        _set_visitor_auth(actual_username, True)
 
     return jsonify(result)
 
 
 @app.route("/api/auth-status")
 def api_auth_status():
-    """Check if we're logged in."""
-    config = _load_config()
-    username = config.get("instagram_username", "")
+    """Check if the current visitor is logged in (per-session)."""
+    visitor = _get_visitor_session()
+    username = visitor.get("username", "")
+    logged_in = visitor.get("logged_in", False) and bool(username)
+
+    # Verify the session file still exists if they claim to be logged in
+    if logged_in and not is_logged_in(username):
+        logged_in = False
+
     videos = get_local_videos()
     recipes = load_recipes()
+    config = _load_config()
 
     return jsonify({
-        "username": username,
-        "logged_in": bool(username and is_logged_in(username)),
+        "username": username if logged_in else "",
+        "logged_in": logged_in,
         "videos_count": len(videos),
         "recipes_count": len([r for r in recipes if "error" not in r]),
         "has_openai_key": bool(config.get("openai_api_key") or os.getenv("OPENAI_API_KEY")),
     })
+
+
+@app.route("/api/disconnect", methods=["POST"])
+def api_disconnect():
+    """Disconnect the current visitor's Instagram session."""
+    vid = _get_visitor_id()
+    if vid and vid in visitor_sessions:
+        del visitor_sessions[vid]
+    return jsonify({"success": True, "message": "Disconnected"})
 
 
 # ═══════════════════════════════════════════════════════════
@@ -174,10 +214,16 @@ def api_fetch_and_process():
     if state["active"]:
         return jsonify({"error": "Already processing. Please wait."}), 409
 
-    config = _load_config()
-    username = config.get("instagram_username", "")
+    # Use per-visitor session username if available, fall back to global config
+    visitor = _get_visitor_session()
+    username = visitor.get("username", "") if visitor.get("logged_in") else ""
     if not username:
-        return jsonify({"error": "Not logged in"}), 401
+        config = _load_config()
+        username = config.get("instagram_username", "")
+    if not username:
+        return jsonify({"error": "Not logged in. Connect your Instagram account first."}), 401
+
+    config = _load_config()
 
     def run():
         state["active"] = True

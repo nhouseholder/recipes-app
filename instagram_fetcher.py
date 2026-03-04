@@ -311,9 +311,10 @@ def login_with_sessionid(sessionid: str) -> dict:
     return _create_session_from_cookies(sessionid.strip(), source="sessionid")
 
 
-def login(username: str, password: str, two_factor_code: str = "") -> dict:
+def login(username: str, password: str, two_factor_code: str = "", persist: bool = True) -> dict:
     """
     Log in to Instagram. Caches the session for future use.
+    If persist=False, skip saving credentials to global config (for per-visitor sessions).
     Returns {"success": True} or {"error": "...", "needs_2fa": bool}
     """
     SESSION_DIR.mkdir(parents=True, exist_ok=True)
@@ -352,8 +353,9 @@ def login(username: str, password: str, two_factor_code: str = "") -> dict:
             actual_session = SESSION_DIR / f"{actual_username}.session"
             L.save_session_to_file(str(actual_session))
 
-        # Persist credentials for auto-fetch later
-        save_credentials(username, password)
+        # Persist credentials for auto-fetch later (skip for visitor sessions)
+        if persist:
+            save_credentials(username, password)
 
         return {"success": True, "message": f"Logged in as @{actual_username}", "username": actual_username}
 
