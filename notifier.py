@@ -324,23 +324,25 @@ def _send_imessage_text(phone: str, text: str) -> bool:
 CARDS_BASE_URL = "https://recipecardsai.pages.dev/api/cards"
 
 
-def imessage_recipe_cards(count: int = 3, recipe_index: int = None) -> dict:
+def imessage_recipe_cards(count: int = 3, recipe_index: int = None, phone: str = None) -> dict:
     """
     Generate recipe card images, host them on the server, and text the
     image URLs via iMessage.  iOS renders link previews inline so the
     recipient sees the card image directly in Messages.
     
     If recipe_index is provided, send that specific recipe instead of random picks.
+    If phone is provided, send to that number; otherwise fall back to config.
     """
     from recipe_card import generate_recipe_card, generate_cards_for_recipes
     from grocery_list import build_grocery_list
     import time
     from pathlib import PurePosixPath
 
-    config = _load_config()
-    phone = config.get("sms_phone", "")
     if not phone:
-        return {"error": "No phone number configured."}
+        config = _load_config()
+        phone = config.get("sms_phone", "")
+    if not phone:
+        return {"error": "No phone number provided."}
 
     digits = "".join(c for c in phone if c.isdigit())
     if len(digits) == 10:
@@ -405,18 +407,20 @@ def imessage_recipe_cards(count: int = 3, recipe_index: int = None) -> dict:
         return {"error": "Failed to send any messages via iMessage"}
 
 
-def imessage_recipe_text(count: int = 3) -> dict:
+def imessage_recipe_text(count: int = 3, phone: str = None) -> dict:
     """
     Send recipes as plain text messages via iMessage.
     Each recipe is a single message with title, ingredients, steps, and grocery list.
+    If phone is provided, send to that number; otherwise fall back to config.
     """
     from grocery_list import build_grocery_list
     import time
 
-    config = _load_config()
-    phone = config.get("sms_phone", "")
     if not phone:
-        return {"error": "No phone number configured."}
+        config = _load_config()
+        phone = config.get("sms_phone", "")
+    if not phone:
+        return {"error": "No phone number provided."}
 
     digits = "".join(c for c in phone if c.isdigit())
     if len(digits) == 10:

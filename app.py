@@ -580,7 +580,8 @@ def api_text_recipe_cards():
     data = request.json or {}
     count = data.get("count", 3)
     recipe_index = data.get("recipe_index", None)
-    result = imessage_recipe_cards(count, recipe_index=recipe_index)
+    phone = data.get("phone", None)
+    result = imessage_recipe_cards(count, recipe_index=recipe_index, phone=phone)
     if result.get("success"):
         return jsonify(result)
     return jsonify(result), 500
@@ -592,7 +593,8 @@ def api_text_recipe_plain():
     from notifier import imessage_recipe_text
     data = request.json or {}
     count = data.get("count", 3)
-    result = imessage_recipe_text(count)
+    phone = data.get("phone", None)
+    result = imessage_recipe_text(count, phone=phone)
     if result.get("success"):
         return jsonify(result)
     return jsonify(result), 500
